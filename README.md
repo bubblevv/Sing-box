@@ -23,8 +23,9 @@ Telegram交流反馈群组：https://t.me/eooceu
 # 1：vps一键命令，已集成到ssh工具箱中
 * 注意nat小鸡安装完一键脚本之后需手动更改订阅端口和节点端口在允许范围内的端口，否则节点不通
 * 可在脚本前添加PORT变量，随脚本一起运行，即可定义端口，需确保PORT端口后面的3个端口可用，否则节点不通
-* 可选环境变量PORT CFIP CFPORT
+* 可选环境变量PORT CFIP CFPORT REALITY_SERVER TLS_SERVER
 * VPS脚本已内置配置预检、异常自动重启、systemd/OpenRC健康巡检保活
+* vmess-argo 默认直连当前 Argo 域名，只有在你明确需要自定义前置优选域名时才建议传入 `CFIP`
 * 当前默认仓库已切到 `bubblevv/Sing-box`，后续你再换仓库时，只需把下面命令里的仓库名替换掉，或在运行前加上 `SCRIPT_REPO=你的用户名/你的仓库名`
 
 ## VPS一键四协议安装脚本

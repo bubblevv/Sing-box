@@ -27,8 +27,10 @@ work_dir="/etc/sing-box"
 config_dir="${work_dir}/config.json"
 client_dir="${work_dir}/url.txt"
 export vless_port=${PORT:-$(shuf -i 1000-65000 -n 1)}
-export CFIP=${CFIP:-'cf.877774.xyz'} 
+export CFIP=${CFIP:-''}
 export CFPORT=${CFPORT:-'443'} 
+export REALITY_SERVER=${REALITY_SERVER:-''}
+export TLS_SERVER=${TLS_SERVER:-'bing.com'}
 script_repo="${SCRIPT_REPO:-bubblevv/Sing-box}"
 script_branch="${SCRIPT_BRANCH:-main}"
 repo_web_url="https://github.com/${script_repo}"
@@ -45,6 +47,28 @@ healthcheck_cron_marker="sing-box-healthcheck"
 # 检查命令是否存在函数
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+pick_reality_server() {
+    local candidate
+
+    [ -n "${REALITY_SERVER}" ] && { echo "${REALITY_SERVER}"; return 0; }
+
+    for candidate in www.cloudflare.com www.microsoft.com www.apple.com www.bing.com; do
+        if curl -I -sm 5 "https://${candidate}" >/dev/null 2>&1; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    echo "www.cloudflare.com"
+}
+
+get_cert_common_name() {
+    local cert_cn
+
+    cert_cn=$(openssl x509 -in "${work_dir}/cert.pem" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *//p' | awk '{print $1}')
+    [ -n "${cert_cn}" ] && echo "${cert_cn}" || echo "${TLS_SERVER}"
 }
 
 install_cron_job() {
@@ -85,6 +109,7 @@ set -u
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WORK_DIR="/etc/sing-box"
 CONFIG_FILE="${WORK_DIR}/config.json"
+URL_FILE="${WORK_DIR}/url.txt"
 SB_BIN="${WORK_DIR}/sing-box"
 ARGO_BIN="${WORK_DIR}/argo"
 LOG_FILE="${WORK_DIR}/healthcheck.log"
@@ -101,6 +126,15 @@ timestamp() {
 
 log() {
     printf '[%s] %s\n' "$(timestamp)" "$1" >> "${LOG_FILE}"
+}
+
+is_quick_tunnel() {
+    grep -q -- '--url http://localhost:8001' /etc/init.d/argo 2>/dev/null || \
+    grep -q -- '--url http://localhost:8001' /etc/systemd/system/argo.service 2>/dev/null
+}
+
+extract_argo_domain() {
+    sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${WORK_DIR}/argo.log" 2>/dev/null | tail -n 1
 }
 
 acquire_lock() {
@@ -137,16 +171,62 @@ restart_service() {
     fi
 }
 
+refresh_quick_tunnel_subscription() {
+    local argo_domain vmess_line vmess_payload vmess_json current_add current_host update_add updated_json updated_vmess new_content
+
+    is_quick_tunnel || return 0
+    [ -f "${URL_FILE}" ] || return 0
+    [ -f "${WORK_DIR}/argo.log" ] || return 0
+
+    argo_domain=$(extract_argo_domain)
+    [ -n "${argo_domain}" ] || return 0
+
+    vmess_line=$(grep '^vmess://' "${URL_FILE}" 2>/dev/null || true)
+    [ -n "${vmess_line}" ] || return 0
+
+    vmess_payload=${vmess_line#vmess://}
+    vmess_json=$(printf '%s' "${vmess_payload}" | base64 -d 2>/dev/null || true)
+    [ -n "${vmess_json}" ] || return 0
+
+    current_add=$(printf '%s' "${vmess_json}" | jq -r '.add // empty' 2>/dev/null)
+    current_host=$(printf '%s' "${vmess_json}" | jq -r '.host // empty' 2>/dev/null)
+    update_add=0
+
+    case "${current_add}" in
+        ""|*.trycloudflare.com|cf.090227.xyz|cf.877774.xyz|cf.877771.xyz|cdns.doon.eu.org|cf.zhetengsha.eu.org|time.is|www.visa.com.tw)
+            update_add=1
+            ;;
+    esac
+
+    if [ "${current_host}" = "${argo_domain}" ] && [ "${update_add}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ "${update_add}" -eq 1 ]; then
+        updated_json=$(printf '%s' "${vmess_json}" | jq -c --arg argo "${argo_domain}" '.add=$argo | .port="443" | .host=$argo | .sni=$argo')
+    else
+        updated_json=$(printf '%s' "${vmess_json}" | jq -c --arg argo "${argo_domain}" '.host=$argo | .sni=$argo')
+    fi
+
+    updated_vmess="vmess://$(printf '%s' "${updated_json}" | base64 -w0)"
+    new_content=$(sed "s|^vmess://.*$|${updated_vmess}|" "${URL_FILE}")
+    printf '%s\n' "${new_content}" > "${URL_FILE}"
+    base64 -w0 "${URL_FILE}" > "${WORK_DIR}/sub.txt"
+    log "refreshed vmess quick tunnel domain to ${argo_domain}"
+}
+
 ensure_service_running() {
     local service_name="$1"
 
     if service_active "${service_name}"; then
+        [ "${service_name}" = "argo" ] && refresh_quick_tunnel_subscription
         return 0
     fi
 
     log "${service_name} is inactive, restarting"
     restart_service "${service_name}" >/dev/null 2>&1
     sleep 3
+    [ "${service_name}" = "argo" ] && sleep 5 && refresh_quick_tunnel_subscription
     service_active "${service_name}" || log "${service_name} is still inactive after restart"
 }
 
@@ -450,13 +530,15 @@ install_singbox() {
     output=$(/etc/sing-box/sing-box generate reality-keypair)
     private_key=$(echo "${output}" | awk '/PrivateKey:/ {print $2}')
     public_key=$(echo "${output}" | awk '/PublicKey:/ {print $2}')
+    reality_server=$(pick_reality_server)
+    tls_server="${TLS_SERVER}"
 
     # 放行端口
     allow_port $vless_port/tcp $nginx_port/tcp $tuic_port/udp $hy2_port/udp > /dev/null 2>&1
 
     # 生成自签名证书
     openssl ecparam -genkey -name prime256v1 -out "${work_dir}/private.key"
-    openssl req -new -x509 -days 3650 -key "${work_dir}/private.key" -out "${work_dir}/cert.pem" -subj "/CN=bing.com"
+    openssl req -new -x509 -days 3650 -key "${work_dir}/private.key" -out "${work_dir}/cert.pem" -subj "/CN=${tls_server}"
     
     # 检测网络类型并设置DNS策略
     dns_strategy=$(ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 && echo "prefer_ipv4" || (ping -c 1 -W 3 2001:4860:4860::8888 >/dev/null 2>&1 && echo "prefer_ipv6" || echo "prefer_ipv4"))
@@ -493,11 +575,11 @@ cat > "${config_dir}" << EOF
       ],
       "tls": {
         "enabled": true,
-        "server_name": "www.iij.ad.jp",
+        "server_name": "$reality_server",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "www.iij.ad.jp",
+            "server": "$reality_server",
             "server_port": 443
           },
           "private_key": "$private_key",
@@ -532,7 +614,7 @@ cat > "${config_dir}" << EOF
         }
       ],
       "ignore_client_bandwidth": false,
-      "masquerade": "https://bing.com",
+      "masquerade": "https://${tls_server}",
       "tls": {
         "enabled": true,
         "alpn": ["h3"],
@@ -740,32 +822,38 @@ get_info() {
   server_ip=$(get_realip)
   clear
   isp=$(curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://api.ip.sb/geoip" | tr -d '\n' | awk -F\" '{c="";i="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="isp")i=$(x+2)};if(c&&i)print c"-"i}' | sed 's/ /_/g' || curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://ipapi.co/json" | tr -d '\n' | awk -F\" '{c="";o="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="org")o=$(x+2)};if(c&&o)print c"-"o}' | sed 's/ /_/g' || echo "$hostname")
+  reality_sni=$(jq -r '.inbounds[] | select(.tag=="vless-reality") | .tls.server_name' "${config_dir}" 2>/dev/null)
+  [ -z "${reality_sni}" ] && reality_sni=$(pick_reality_server)
+  tls_sni=$(get_cert_common_name)
   
   if [ -f "${work_dir}/argo.log" ]; then
       for i in {1..5}; do
           purple "第 $i 次尝试获取ArgoDoamin中..."
-          argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log")
+          argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log" | tail -n 1)
           [ -n "$argodomain" ] && break
           sleep 2
       done
   else
       restart_argo
       sleep 6
-      argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log")
+      argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log" | tail -n 1)
   fi
 
   green "\nArgoDomain：${purple}$argodomain${re}\n"
+  vmess_add="${argodomain}"
+  vmess_port="${CFPORT}"
+  [ -n "${CFIP}" ] && vmess_add="${CFIP}"
 
-  VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${CFIP}\", \"port\": \"${CFPORT}\", \"id\": \"${uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"firefox\", \"allowlnsecure\": \"flase\"}"
+  VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${vmess_add}\", \"port\": \"${vmess_port}\", \"id\": \"${uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"firefox\", \"allowInsecure\": \"false\"}"
 
   cat > ${work_dir}/url.txt <<EOF
-vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.iij.ad.jp&fp=firefox&pbk=${public_key}&type=tcp&headerType=none#${isp}
+vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${reality_sni}&fp=firefox&pbk=${public_key}&type=tcp&headerType=none#${isp}
 
 vmess://$(echo "$VMESS" | base64 -w0)
 
-hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=www.bing.com&insecure=1&alpn=h3&obfs=none#${isp}
+hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=${tls_sni}&insecure=1&alpn=h3&obfs=none#${isp}
 
-tuic://${uuid}:${password}@${server_ip}:${tuic_port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${isp}
+tuic://${uuid}:${password}@${server_ip}:${tuic_port}?sni=${tls_sni}&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${isp}
 EOF
 echo ""
 while IFS= read -r line; do echo -e "${purple}$line"; done < ${work_dir}/url.txt
@@ -1229,8 +1317,8 @@ change_config() {
             sed -i -E 's/(vless:\/\/|hysteria2:\/\/)[^@]*(@.*)/\1'"$new_uuid"'\2/' $client_dir
             sed -i "s/tuic:\/\/[0-9a-f\-]\{36\}/tuic:\/\/$new_uuid/" /etc/sing-box/url.txt
             isp=$(curl -s https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g')
-            argodomain=$(grep -oE 'https://[[:alnum:]+\.-]+\.trycloudflare\.com' "${work_dir}/argo.log" | sed 's@https://@@')
-            VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"www.visa.com.tw\", \"port\": \"443\", \"id\": \"${new_uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"\", \"allowlnsecure\": \"flase\"}"
+            argodomain=$(grep -oE 'https://[[:alnum:]+\.-]+\.trycloudflare\.com' "${work_dir}/argo.log" | sed 's@https://@@' | tail -n 1)
+            VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${argodomain}\", \"port\": \"443\", \"id\": \"${new_uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"\", \"allowInsecure\": \"false\"}"
             encoded_vmess=$(echo "$VMESS" | base64 -w0)
             sed -i -E '/vmess:\/\//{s@vmess://.*@vmess://'"$encoded_vmess"'@}' $client_dir
             base64 -w0 $client_dir > /etc/sing-box/sub.txt
@@ -1313,8 +1401,9 @@ EOF
             uuid=$(sed -n 's/.*hysteria2:\/\/\([^@]*\)@.*/\1/p' $client_dir)
             line_number=$(grep -n 'hysteria2://' $client_dir | cut -d':' -f1)
             isp=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g' || echo "vps")
+            tls_sni=$(get_cert_common_name)
             sed -i.bak "/hysteria2:/d" $client_dir
-            sed -i "${line_number}i hysteria2://$uuid@$ip:$listen_port?peer=www.bing.com&insecure=1&alpn=h3&obfs=none&mport=$listen_port,$min_port-$max_port#$isp" $client_dir
+            sed -i "${line_number}i hysteria2://$uuid@$ip:$listen_port?peer=$tls_sni&insecure=1&alpn=h3&obfs=none&mport=$listen_port,$min_port-$max_port#$isp" $client_dir
             base64 -w0 $client_dir > /etc/sing-box/sub.txt
             while IFS= read -r line; do yellow "$line"; done < ${work_dir}/url.txt
             green "\nhysteria2端口跳跃已开启,跳跃端口为：${purple}$min_port-$max_port${re} ${green}请更新订阅或手动复制以上hysteria2节点${re}\n"
@@ -1596,14 +1685,14 @@ sleep 3
 if [ -f /etc/sing-box/argo.log ]; then
   for i in {1..5}; do
       purple "第 $i 次尝试获取ArgoDoamin中..."
-      get_argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "/etc/sing-box/argo.log")
+      get_argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "/etc/sing-box/argo.log" | tail -n 1)
       [ -n "$get_argodomain" ] && break
       sleep 2
   done
 else
   restart_argo
   sleep 6
-  get_argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "/etc/sing-box/argo.log")
+  get_argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "/etc/sing-box/argo.log" | tail -n 1)
 fi
 green "ArgoDomain：${purple}$get_argodomain${re}\n"
 ArgoDomain=$get_argodomain
@@ -1616,7 +1705,15 @@ vmess_url=$(grep -o 'vmess://[^ ]*' "$client_dir")
 vmess_prefix="vmess://"
 encoded_vmess="${vmess_url#"$vmess_prefix"}"
 decoded_vmess=$(echo "$encoded_vmess" | base64 --decode)
-updated_vmess=$(echo "$decoded_vmess" | jq --arg new_domain "$ArgoDomain" '.host = $new_domain | .sni = $new_domain')
+current_add=$(echo "$decoded_vmess" | jq -r '.add // empty')
+case "$current_add" in
+    ""|*.trycloudflare.com|cf.090227.xyz|cf.877774.xyz|cf.877771.xyz|cdns.doon.eu.org|cf.zhetengsha.eu.org|time.is|www.visa.com.tw)
+        updated_vmess=$(echo "$decoded_vmess" | jq --arg new_domain "$ArgoDomain" '.add = $new_domain | .port = "443" | .host = $new_domain | .sni = $new_domain')
+        ;;
+    *)
+        updated_vmess=$(echo "$decoded_vmess" | jq --arg new_domain "$ArgoDomain" '.host = $new_domain | .sni = $new_domain')
+        ;;
+esac
 encoded_updated_vmess=$(echo "$updated_vmess" | base64 | tr -d '\n')
 new_vmess_url="${vmess_prefix}${encoded_updated_vmess}"
 new_content=$(echo "$content" | sed "s|$vmess_url|$new_vmess_url|")
