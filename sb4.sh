@@ -503,8 +503,9 @@ $COMMAND "${FILE_PATH}/${SUB_TOKEN}.php" "$PHP_URL"
 $COMMAND "${WORKDIR}/qrencode" "$QR_URL" && chmod +x "${WORKDIR}/qrencode"
 V2rayN_LINK="https://${USERNAME}.${CURRENT_DOMAIN}/v2.log"
 AUTO_LINK="https://${USERNAME}.${CURRENT_DOMAIN}/${SUB_TOKEN}"
-curl -sS "https://sublink.eooce.com/clash?config=${V2rayN_LINK}" -o ${FILE_PATH}/clash.yaml
-curl -sS "https://sublink.eooce.com/singbox?config=${V2rayN_LINK}" -o ${FILE_PATH}/singbox.yaml
+ENCODED_V2RAYN_LINK=$(printf '%s' "${V2rayN_LINK}" | jq -sRr @uri)
+curl -sS "https://sublink.eooce.com/clash?config=${ENCODED_V2RAYN_LINK}" -o ${FILE_PATH}/clash.yaml
+curl -sS "https://sublink.eooce.com/singbox?config=${ENCODED_V2RAYN_LINK}" -o ${FILE_PATH}/singbox.yaml
 "${WORKDIR}/qrencode" -m 2 -t UTF8 "${AUTO_LINK}"
 purple "\n自适应节点订阅链接: ${AUTO_LINK}\n"
 green "二维码和节点订阅链接适用于 V2rayN/Nekoray/ShadowRocket/Clash/Mihomo/Sing-box/karing/Loon/sterisand 等\n\n"

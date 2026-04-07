@@ -47,6 +47,14 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+url_encode() {
+    if command_exists jq; then
+        printf '%s' "$1" | jq -sRr @uri
+    else
+        printf '%s' "$1"
+    fi
+}
+
 service_process_running() {
     local service_name="$1"
 
@@ -932,18 +940,23 @@ echo ""
 while IFS= read -r line; do echo -e "${purple}$line"; done < ${work_dir}/url.txt
 base64 -w0 ${work_dir}/url.txt > ${work_dir}/sub.txt
 chmod 644 ${work_dir}/sub.txt
+sub_url="http://${server_ip}:${nginx_port}/${password}"
+encoded_sub_url=$(url_encode "${sub_url}")
+clash_sub_url="https://sublink.eooce.com/clash?config=${encoded_sub_url}"
+singbox_sub_url="https://sublink.eooce.com/singbox?config=${encoded_sub_url}"
+surge_sub_url="https://sublink.eooce.com/surge?config=${encoded_sub_url}"
 yellow "\n温馨提醒：需打开V2rayN或其他软件里的 "跳过证书验证"，或将节点的Insecure或TLS里设置为"true"\n"
-green "V2rayN,Shadowrocket,Nekobox,Loon,Karing,Sterisand订阅链接：http://${server_ip}:${nginx_port}/${password}\n"
-$work_dir/qrencode "http://${server_ip}:${nginx_port}/${password}"
+green "V2rayN,Shadowrocket,Nekobox,Loon,Karing,Sterisand订阅链接：${sub_url}\n"
+$work_dir/qrencode "${sub_url}"
 yellow "\n=========================================================================================="
-green "\n\nClash,Mihomo系列订阅链接：https://sublink.eooce.com/clash?config=http://${server_ip}:${nginx_port}/${password}\n"
-$work_dir/qrencode "https://sublink.eooce.com/clash?config=http://${server_ip}:${nginx_port}/${password}"
+green "\n\nClash,Mihomo系列订阅链接：${clash_sub_url}\n"
+$work_dir/qrencode "${clash_sub_url}"
 yellow "\n=========================================================================================="
-green "\n\nSing-box订阅链接：https://sublink.eooce.com/singbox?config=http://${server_ip}:${nginx_port}/${password}\n"
-$work_dir/qrencode "https://sublink.eooce.com/singbox?config=http://${server_ip}:${nginx_port}/${password}"
+green "\n\nSing-box订阅链接：${singbox_sub_url}\n"
+$work_dir/qrencode "${singbox_sub_url}"
 yellow "\n=========================================================================================="
-green "\n\nSurge订阅链接：https://sublink.eooce.com/surge?config=http://${server_ip}:${nginx_port}/${password}\n"
-$work_dir/qrencode "https://sublink.eooce.com/surge?config=http://${server_ip}:${nginx_port}/${password}"
+green "\n\nSurge订阅链接：${surge_sub_url}\n"
+$work_dir/qrencode "${surge_sub_url}"
 yellow "\n==========================================================================================\n"
 }
 
@@ -1793,11 +1806,12 @@ check_nodes() {
     server_ip=$(get_realip)
     lujing=$(sed -n 's|.*location = /\([^ ]*\).*|\1|p' "/etc/nginx/conf.d/sing-box.conf")
     sub_port=$(sed -n 's/^\s*listen \([0-9]\+\);/\1/p' "/etc/nginx/conf.d/sing-box.conf")
-    base64_url="http://${server_ip}:${sub_port}/${lujing}"
-    green "\n\nSurge订阅链接: ${purple}https://sublink.eooce.com/surge?config=${base64_url}${re}\n"
-    green "sing-box订阅链接: ${purple}https://sublink.eooce.com/singbox?config=${base64_url}${purple}\n"
-    green "Mihomo/Clash系列订阅链接: ${purple}https://sublink.eooce.com/clash?config=${base64_url}${re}\n"
-    green "V2rayN,Shadowrocket,Nekobox,Loon,Karing,Sterisand订阅链接: ${purple}${base64_url}${re}\n"
+    sub_url="http://${server_ip}:${sub_port}/${lujing}"
+    encoded_sub_url=$(url_encode "${sub_url}")
+    green "\n\nSurge订阅链接: ${purple}https://sublink.eooce.com/surge?config=${encoded_sub_url}${re}\n"
+    green "sing-box订阅链接: ${purple}https://sublink.eooce.com/singbox?config=${encoded_sub_url}${purple}\n"
+    green "Mihomo/Clash系列订阅链接: ${purple}https://sublink.eooce.com/clash?config=${encoded_sub_url}${re}\n"
+    green "V2rayN,Shadowrocket,Nekobox,Loon,Karing,Sterisand订阅链接: ${purple}${sub_url}${re}\n"
 }
 
 change_cfip() {

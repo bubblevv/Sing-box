@@ -55,6 +55,7 @@ Telegram交流反馈群组：https://t.me/eooceu
 ```
 bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/sing-box.sh)
 ```
+* 已安装旧版脚本时，重新执行上面这条命令即可更新到最新版
 
 ## vps带端口变量运行示列(NAT机)
 PORT=开放的端口 确保后面有3个端口可用
