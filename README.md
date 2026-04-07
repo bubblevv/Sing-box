@@ -60,6 +60,12 @@ Telegram交流反馈群组：https://t.me/eooceu
 ```
 bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/sing-box.sh)
 ```
+
+## 独立 vmess-argo 优选脚本
+```
+bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/vmess_cf_best.sh)
+```
+
 ## vps带端口变量运行示列(NAT机)
 PORT=开放的端口 确保后面有3个端口可用
 ```
