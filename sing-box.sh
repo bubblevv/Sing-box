@@ -49,6 +49,25 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+service_process_running() {
+    local service_name="$1"
+
+    case "${service_name}" in
+        "sing-box")
+            pgrep -x "sing-box" >/dev/null 2>&1 || pgrep -f "/etc/sing-box/sing-box run -c /etc/sing-box/config.json" >/dev/null 2>&1
+            ;;
+        "argo")
+            pgrep -x "argo" >/dev/null 2>&1 || pgrep -f "/etc/sing-box/argo tunnel" >/dev/null 2>&1
+            ;;
+        "nginx")
+            pgrep -x "nginx" >/dev/null 2>&1
+            ;;
+        *)
+            pgrep -x "${service_name}" >/dev/null 2>&1
+            ;;
+    esac
+}
+
 pick_reality_server() {
     local candidate
 
@@ -339,7 +358,13 @@ check_service() {
     [[ ! -f "${service_file}" ]] && { red "not installed"; return 2; }
         
     if command_exists apk; then
-        rc-service "${service_name}" status | grep -q "started" && green "running" || yellow "not running"
+        if rc-service "${service_name}" status 2>/dev/null | grep -q "started"; then
+            green "running"
+        elif service_process_running "${service_name}"; then
+            green "running"
+        else
+            yellow "not running"
+        fi
     else
         systemctl is-active "${service_name}" | grep -q "^active$" && green "running" || yellow "not running"
     fi
