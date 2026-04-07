@@ -13,6 +13,33 @@
 
 sing-box是一个强大的代理脚本，多种环境下使用。它支持多种代理协议（VLESS-reality-verison、VMess-ws-tls(tunnel)、Hysteria2、Tuic），并集成了哪吒(v0/v1)探针功能。
 
+## 项目说明
+
+本仓库基于原作者项目二次修改：
+
+* 上游项目：`eooce/Sing-box`
+* 当前仓库：`bubblevv/Sing-box`
+* 说明：保留原项目主要结构与功能，在 VPS 四协议安装脚本上做稳定性和可用性增强
+
+## 本 Fork 改了什么
+
+* 增强 VPS 版 `sing-box.sh` 的保活逻辑，补充配置预检、自动重启和健康巡检
+* 修复 `Argo` 临时隧道重启后域名变化，导致 `vmess-argo` 节点失效的问题
+* 调整 `vmess-argo` 默认生成逻辑，默认直连当前 `Argo` 域名，不再强依赖第三方前置优选域名
+* 修复 `VLESS-Reality` 默认伪装站写死导致部分 VPS 无法握手的问题，改为自动选择当前机器可连通的目标站
+* 统一 `hy2/tuic` 的证书和 `SNI` 生成逻辑，降低客户端导入后超时或握手异常的概率
+* 将脚本默认仓库入口切到当前 Fork，安装命令、快捷命令和文档说明默认指向 `bubblevv/Sing-box`
+
+## 新增功能
+
+* `systemd` 下新增 `sing-box-healthcheck.timer`
+* `OpenRC` 下新增 `cron` 巡检保活
+* 服务退出后可自动拉起
+* 监听端口异常时可自动重启
+* 临时 `Argo` 域名变化后会自动刷新订阅中的 `vmess` 节点
+* 新增 `REALITY_SERVER` 环境变量，可手动指定 Reality 伪装站
+* 新增 `TLS_SERVER` 环境变量，可手动指定 `hy2/tuic` 证书与 `SNI`
+
 ---
 
 Telegram交流反馈群组：https://t.me/eooceu
