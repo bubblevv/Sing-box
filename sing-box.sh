@@ -27,10 +27,8 @@ work_dir="/etc/sing-box"
 config_dir="${work_dir}/config.json"
 client_dir="${work_dir}/url.txt"
 export vless_port=${PORT:-$(shuf -i 1000-65000 -n 1)}
-export CFIP=${CFIP:-''}
+export CFIP=${CFIP:-'cf.877774.xyz'}
 export CFPORT=${CFPORT:-'443'} 
-export REALITY_SERVER=${REALITY_SERVER:-''}
-export TLS_SERVER=${TLS_SERVER:-'bing.com'}
 script_repo="${SCRIPT_REPO:-bubblevv/Sing-box}"
 script_branch="${SCRIPT_BRANCH:-main}"
 repo_web_url="https://github.com/${script_repo}"
@@ -66,85 +64,6 @@ service_process_running() {
             pgrep -x "${service_name}" >/dev/null 2>&1
             ;;
     esac
-}
-
-pick_reality_server() {
-    local candidate
-
-    [ -n "${REALITY_SERVER}" ] && { echo "${REALITY_SERVER}"; return 0; }
-
-    for candidate in www.cloudflare.com www.microsoft.com www.apple.com www.bing.com; do
-        if curl -I -sm 5 "https://${candidate}" >/dev/null 2>&1; then
-            echo "${candidate}"
-            return 0
-        fi
-    done
-
-    echo "www.cloudflare.com"
-}
-
-get_cert_common_name() {
-    local cert_cn
-
-    cert_cn=$(openssl x509 -in "${work_dir}/cert.pem" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *//p' | awk '{print $1}')
-    [ -n "${cert_cn}" ] && echo "${cert_cn}" || echo "${TLS_SERVER}"
-}
-
-get_current_vmess_json() {
-    local vmess_url encoded_vmess
-
-    [ -f "${client_dir}" ] || return 1
-
-    vmess_url=$(grep -o 'vmess://[^ ]*' "${client_dir}" 2>/dev/null || true)
-    [ -n "${vmess_url}" ] || return 1
-
-    encoded_vmess="${vmess_url#vmess://}"
-    echo "${encoded_vmess}" | base64 --decode 2>/dev/null
-}
-
-get_current_argo_domain() {
-    local argodomain
-
-    argodomain=$(sed -n 's|.*https://\([^/]*trycloudflare\.com\).*|\1|p' "${work_dir}/argo.log" 2>/dev/null | tail -n 1)
-    [ -n "${argodomain}" ] && { echo "${argodomain}"; return 0; }
-
-    get_current_vmess_json 2>/dev/null | jq -r '.host // empty' 2>/dev/null
-}
-
-test_vmess_cfip() {
-    local cfip="$1"
-    local cfport="$2"
-    local argodomain="$3"
-    local response_headers
-
-    [ -n "${cfip}" ] || return 1
-    [ -n "${cfport}" ] || return 1
-    [ -n "${argodomain}" ] || return 1
-
-    response_headers=$(curl -sk --max-time 12 -o /dev/null -D - \
-        --connect-to "${argodomain}:443:${cfip}:${cfport}" \
-        -H "Connection: Upgrade" \
-        -H "Upgrade: websocket" \
-        -H "Sec-WebSocket-Version: 13" \
-        -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" \
-        "https://${argodomain}/vmess-argo?ed=2560" 2>/dev/null || true)
-
-    echo "${response_headers}" | grep -q "101 Switching Protocols"
-}
-
-auto_select_vmess_cfip() {
-    local argodomain="$1"
-    local candidate
-
-    for candidate in cf.090227.xyz cf.877774.xyz cf.877771.xyz cdns.doon.eu.org cf.zhetengsha.eu.org time.is; do
-        yellow "测试 vmess-argo 优选域名: ${candidate}:443" >&2
-        if test_vmess_cfip "${candidate}" "443" "${argodomain}"; then
-            echo "${candidate}:443"
-            return 0
-        fi
-    done
-
-    return 1
 }
 
 install_cron_job() {
@@ -610,15 +529,13 @@ install_singbox() {
     output=$(/etc/sing-box/sing-box generate reality-keypair)
     private_key=$(echo "${output}" | awk '/PrivateKey:/ {print $2}')
     public_key=$(echo "${output}" | awk '/PublicKey:/ {print $2}')
-    reality_server=$(pick_reality_server)
-    tls_server="${TLS_SERVER}"
 
     # 放行端口
     allow_port $vless_port/tcp $nginx_port/tcp $tuic_port/udp $hy2_port/udp > /dev/null 2>&1
 
     # 生成自签名证书
     openssl ecparam -genkey -name prime256v1 -out "${work_dir}/private.key"
-    openssl req -new -x509 -days 3650 -key "${work_dir}/private.key" -out "${work_dir}/cert.pem" -subj "/CN=${tls_server}"
+    openssl req -new -x509 -days 3650 -key "${work_dir}/private.key" -out "${work_dir}/cert.pem" -subj "/CN=bing.com"
     
     # 检测网络类型并设置DNS策略
     dns_strategy=$(ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 && echo "prefer_ipv4" || (ping -c 1 -W 3 2001:4860:4860::8888 >/dev/null 2>&1 && echo "prefer_ipv6" || echo "prefer_ipv4"))
@@ -655,11 +572,11 @@ cat > "${config_dir}" << EOF
       ],
       "tls": {
         "enabled": true,
-        "server_name": "$reality_server",
+        "server_name": "www.iij.ad.jp",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "$reality_server",
+            "server": "www.iij.ad.jp",
             "server_port": 443
           },
           "private_key": "$private_key",
@@ -694,7 +611,7 @@ cat > "${config_dir}" << EOF
         }
       ],
       "ignore_client_bandwidth": false,
-      "masquerade": "https://${tls_server}",
+      "masquerade": "https://bing.com",
       "tls": {
         "enabled": true,
         "alpn": ["h3"],
@@ -902,9 +819,6 @@ get_info() {
   server_ip=$(get_realip)
   clear
   isp=$(curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://api.ip.sb/geoip" | tr -d '\n' | awk -F\" '{c="";i="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="isp")i=$(x+2)};if(c&&i)print c"-"i}' | sed 's/ /_/g' || curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://ipapi.co/json" | tr -d '\n' | awk -F\" '{c="";o="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="org")o=$(x+2)};if(c&&o)print c"-"o}' | sed 's/ /_/g' || echo "$hostname")
-  reality_sni=$(jq -r '.inbounds[] | select(.tag=="vless-reality") | .tls.server_name' "${config_dir}" 2>/dev/null)
-  [ -z "${reality_sni}" ] && reality_sni=$(pick_reality_server)
-  tls_sni=$(get_cert_common_name)
   
   if [ -f "${work_dir}/argo.log" ]; then
       for i in {1..5}; do
@@ -920,28 +834,16 @@ get_info() {
   fi
 
   green "\nArgoDomain：${purple}$argodomain${re}\n"
-  vmess_add="${argodomain}"
-  vmess_port="443"
-  if [ -n "${CFIP}" ]; then
-      if test_vmess_cfip "${CFIP}" "${CFPORT}" "${argodomain}"; then
-          vmess_add="${CFIP}"
-          vmess_port="${CFPORT}"
-          green "vmess-argo 优选域名测试通过: ${purple}${CFIP}:${CFPORT}${re}\n"
-      else
-          yellow "vmess-argo 优选域名 ${CFIP}:${CFPORT} 测试失败，已回退为直连 Argo 域名\n"
-      fi
-  fi
-
-  VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${vmess_add}\", \"port\": \"${vmess_port}\", \"id\": \"${uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"firefox\", \"allowInsecure\": \"false\"}"
+  VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${CFIP}\", \"port\": \"${CFPORT}\", \"id\": \"${uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"firefox\", \"allowInsecure\": \"false\"}"
 
   cat > ${work_dir}/url.txt <<EOF
-vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${reality_sni}&fp=firefox&pbk=${public_key}&type=tcp&headerType=none#${isp}
+vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.iij.ad.jp&fp=firefox&pbk=${public_key}&type=tcp&headerType=none#${isp}
 
 vmess://$(echo "$VMESS" | base64 -w0)
 
-hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=${tls_sni}&insecure=1&alpn=h3&obfs=none#${isp}
+hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=www.bing.com&insecure=1&alpn=h3&obfs=none#${isp}
 
-tuic://${uuid}:${password}@${server_ip}:${tuic_port}?sni=${tls_sni}&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${isp}
+tuic://${uuid}:${password}@${server_ip}:${tuic_port}?sni=www.bing.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#${isp}
 EOF
 echo ""
 while IFS= read -r line; do echo -e "${purple}$line"; done < ${work_dir}/url.txt
@@ -1406,7 +1308,7 @@ change_config() {
             sed -i "s/tuic:\/\/[0-9a-f\-]\{36\}/tuic:\/\/$new_uuid/" /etc/sing-box/url.txt
             isp=$(curl -s https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g')
             argodomain=$(grep -oE 'https://[[:alnum:]+\.-]+\.trycloudflare\.com' "${work_dir}/argo.log" | sed 's@https://@@' | tail -n 1)
-            VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"${argodomain}\", \"port\": \"443\", \"id\": \"${new_uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"\", \"allowInsecure\": \"false\"}"
+            VMESS="{ \"v\": \"2\", \"ps\": \"${isp}\", \"add\": \"www.visa.com.tw\", \"port\": \"443\", \"id\": \"${new_uuid}\", \"aid\": \"0\", \"scy\": \"none\", \"net\": \"ws\", \"type\": \"none\", \"host\": \"${argodomain}\", \"path\": \"/vmess-argo?ed=2560\", \"tls\": \"tls\", \"sni\": \"${argodomain}\", \"alpn\": \"\", \"fp\": \"\", \"allowInsecure\": \"false\"}"
             encoded_vmess=$(echo "$VMESS" | base64 -w0)
             sed -i -E '/vmess:\/\//{s@vmess://.*@vmess://'"$encoded_vmess"'@}' $client_dir
             base64 -w0 $client_dir > /etc/sing-box/sub.txt
@@ -1489,9 +1391,8 @@ EOF
             uuid=$(sed -n 's/.*hysteria2:\/\/\([^@]*\)@.*/\1/p' $client_dir)
             line_number=$(grep -n 'hysteria2://' $client_dir | cut -d':' -f1)
             isp=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18}' | sed -e 's/ /_/g' || echo "vps")
-            tls_sni=$(get_cert_common_name)
             sed -i.bak "/hysteria2:/d" $client_dir
-            sed -i "${line_number}i hysteria2://$uuid@$ip:$listen_port?peer=$tls_sni&insecure=1&alpn=h3&obfs=none&mport=$listen_port,$min_port-$max_port#$isp" $client_dir
+            sed -i "${line_number}i hysteria2://$uuid@$ip:$listen_port?peer=www.bing.com&insecure=1&alpn=h3&obfs=none&mport=$listen_port,$min_port-$max_port#$isp" $client_dir
             base64 -w0 $client_dir > /etc/sing-box/sub.txt
             while IFS= read -r line; do yellow "$line"; done < ${work_dir}/url.txt
             green "\nhysteria2端口跳跃已开启,跳跃端口为：${purple}$min_port-$max_port${re} ${green}请更新订阅或手动复制以上hysteria2节点${re}\n"
@@ -1793,13 +1694,7 @@ vmess_url=$(grep -o 'vmess://[^ ]*' "$client_dir")
 vmess_prefix="vmess://"
 encoded_vmess="${vmess_url#"$vmess_prefix"}"
 decoded_vmess=$(echo "$encoded_vmess" | base64 --decode)
-current_add=$(echo "$decoded_vmess" | jq -r '.add // empty')
-current_host=$(echo "$decoded_vmess" | jq -r '.host // empty')
-if [ -z "${current_add}" ] || [ "${current_add}" = "${current_host}" ] || echo "${current_add}" | grep -q 'trycloudflare\.com$'; then
-    updated_vmess=$(echo "$decoded_vmess" | jq --arg new_domain "$ArgoDomain" '.add = $new_domain | .port = "443" | .host = $new_domain | .sni = $new_domain')
-else
-    updated_vmess=$(echo "$decoded_vmess" | jq --arg new_domain "$ArgoDomain" '.host = $new_domain | .sni = $new_domain')
-fi
+updated_vmess=$(echo "$decoded_vmess" | jq --arg new_domain "$ArgoDomain" '.host = $new_domain | .sni = $new_domain')
 encoded_updated_vmess=$(echo "$updated_vmess" | base64 | tr -d '\n')
 new_vmess_url="${vmess_prefix}${encoded_updated_vmess}"
 new_content=$(echo "$content" | sed "s|$vmess_url|$new_vmess_url|")
@@ -1825,26 +1720,14 @@ check_nodes() {
 change_cfip() {
     clear
     yellow "修改vmess-argo优选域名\n"
-    green "0: 清空优选，直连当前Argo域名"
-    green "1: cf.090227.xyz  2: cf.877774.xyz  3: cf.877771.xyz  4: cdns.doon.eu.org  5: cf.zhetengsha.eu.org  6: time.is"
-    green "7: 自动测试以上优选域名并选可用项\n"
-    yellow "说明：CF优选只影响 vmess-argo，不影响 vless、hy2、tuic\n"
-    reading "请输入你的优选域名或优选IP\n(可输入0-7，或域名:端口 / IP:端口，直接回车默认自动测试): " cfip_input
-
-    argodomain=$(get_current_argo_domain)
-    if [ -z "${argodomain}" ]; then
-        red "未获取到当前 Argo 域名，无法修改 vmess-argo 优选域名\n"
-        return 1
-    fi
+    green "1: cf.090227.xyz  2: cf.877774.xyz  3: cf.877771.xyz  4: cdns.doon.eu.org  5: cf.zhetengsha.eu.org  6: time.is\n"
+    reading "请输入你的优选域名或优选IP\n(请输入1至6选项,可输入域名:端口 或 IP:端口,直接回车默认使用1): " cfip_input
 
     if [ -z "$cfip_input" ]; then
-        cfip_input="7"
+        cfip="cf.090227.xyz"
+        cfport="443"
     else
         case "$cfip_input" in
-            "0")
-                cfip=""
-                cfport="443"
-                ;;
             "1")
                 cfip="cf.090227.xyz"
                 cfport="443"
@@ -1869,18 +1752,6 @@ change_cfip() {
                 cfip="time.is"
                 cfport="443"
                 ;;
-            "7")
-                auto_result=$(auto_select_vmess_cfip "${argodomain}" || true)
-                if [ -n "${auto_result}" ]; then
-                    cfip="${auto_result%:*}"
-                    cfport="${auto_result#*:}"
-                    green "\n自动选择到可用 vmess-argo 优选域名: ${purple}${cfip}:${cfport}${re}\n"
-                else
-                    yellow "\n未测试到可用优选域名，已回退为直连当前 Argo 域名\n"
-                    cfip=""
-                    cfport="443"
-                fi
-                ;;
             *)
                 if [[ "$cfip_input" =~ : ]]; then
                     cfip=$(echo "$cfip_input" | cut -d':' -f1)
@@ -1893,33 +1764,18 @@ change_cfip() {
         esac
     fi
 
-    if [ -n "${cfip}" ] && ! test_vmess_cfip "${cfip}" "${cfport}" "${argodomain}"; then
-        yellow "\nvmess-argo 优选域名 ${cfip}:${cfport} 测试失败，已回退为直连当前 Argo 域名\n"
-        cfip=""
-        cfport="443"
-    fi
-
 content=$(cat "$client_dir")
 vmess_url=$(grep -o 'vmess://[^ ]*' "$client_dir")
 encoded_part="${vmess_url#vmess://}"
 decoded_json=$(echo "$encoded_part" | base64 --decode 2>/dev/null)
-if [ -n "${cfip}" ]; then
-    updated_json=$(echo "$decoded_json" | jq --arg cfip "$cfip" --arg cfport "$cfport" \
-        '.add = $cfip | .port = $cfport')
-else
-    updated_json=$(echo "$decoded_json" | jq --arg host "$argodomain" \
-        '.add = $host | .port = "443"')
-fi
+updated_json=$(echo "$decoded_json" | jq --arg cfip "$cfip" --argjson cfport "$cfport" \
+    '.add = $cfip | .port = $cfport')
 new_encoded_part=$(echo "$updated_json" | base64 -w0)
 new_vmess_url="vmess://$new_encoded_part"
 new_content=$(echo "$content" | sed "s|$vmess_url|$new_vmess_url|")
 echo "$new_content" > "$client_dir"
 base64 -w0 "${work_dir}/url.txt" > "${work_dir}/sub.txt"
-if [ -n "${cfip}" ]; then
-    green "\nvmess节点优选域名已更新为：${purple}${cfip}:${cfport}${re} ${green}更新订阅或手动复制以下vmess-argo节点${re}\n"
-else
-    green "\nvmess节点已切换为直连当前 Argo 域名：${purple}${argodomain}:443${re} ${green}更新订阅或手动复制以下vmess-argo节点${re}\n"
-fi
+green "\nvmess节点优选域名已更新为：${purple}${cfip}:${cfport},${green}更新订阅或手动复制以下vmess-argo节点${re}\n"
 purple "$new_vmess_url\n"
 }
 

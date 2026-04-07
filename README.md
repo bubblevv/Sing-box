@@ -19,15 +19,12 @@ sing-box是一个强大的代理脚本，多种环境下使用。它支持多种
 
 * 上游项目：`eooce/Sing-box`
 * 当前仓库：`bubblevv/Sing-box`
-* 说明：保留原项目主要结构与功能，在 VPS 四协议安装脚本上做稳定性和可用性增强
+* 说明：保留原项目主要结构与节点生成逻辑，仅在 VPS 四协议安装脚本上补充持久化与自愈能力
 
 ## 本 Fork 改了什么
 
 * 增强 VPS 版 `sing-box.sh` 的保活逻辑，补充配置预检、自动重启和健康巡检
-* 修复 `Argo` 临时隧道重启后域名变化，导致 `vmess-argo` 节点失效的问题
-* 调整 `vmess-argo` 默认生成逻辑，默认直连当前 `Argo` 域名，不再强依赖第三方前置优选域名
-* 修复 `VLESS-Reality` 默认伪装站写死导致部分 VPS 无法握手的问题，改为自动选择当前机器可连通的目标站
-* 统一 `hy2/tuic` 的证书和 `SNI` 生成逻辑，降低客户端导入后超时或握手异常的概率
+* `Argo` 临时隧道重启后会自动同步订阅中的 `vmess-argo` 域名，避免因临时域名变化失效
 * 将脚本默认仓库入口切到当前 Fork，安装命令、快捷命令和文档说明默认指向 `bubblevv/Sing-box`
 
 ## 新增功能
@@ -37,8 +34,6 @@ sing-box是一个强大的代理脚本，多种环境下使用。它支持多种
 * 服务退出后可自动拉起
 * 监听端口异常时可自动重启
 * 临时 `Argo` 域名变化后会自动刷新订阅中的 `vmess` 节点
-* 新增 `REALITY_SERVER` 环境变量，可手动指定 Reality 伪装站
-* 新增 `TLS_SERVER` 环境变量，可手动指定 `hy2/tuic` 证书与 `SNI`
 
 ---
 
@@ -50,20 +45,13 @@ Telegram交流反馈群组：https://t.me/eooceu
 # 1：vps一键命令，已集成到ssh工具箱中
 * 注意nat小鸡安装完一键脚本之后需手动更改订阅端口和节点端口在允许范围内的端口，否则节点不通
 * 可在脚本前添加PORT变量，随脚本一起运行，即可定义端口，需确保PORT端口后面的3个端口可用，否则节点不通
-* 可选环境变量PORT CFIP CFPORT REALITY_SERVER TLS_SERVER
+* 可选环境变量PORT CFIP CFPORT
 * VPS脚本已内置配置预检、异常自动重启、systemd/OpenRC健康巡检保活
-* vmess-argo 默认直连当前 Argo 域名，只有在你明确需要自定义前置优选域名时才建议传入 `CFIP`
-* 面板里的 vmess-argo 优选域名菜单已支持自动测试可用候选并失败回退到直连 Argo
 * 当前默认仓库已切到 `bubblevv/Sing-box`，后续你再换仓库时，只需把下面命令里的仓库名替换掉，或在运行前加上 `SCRIPT_REPO=你的用户名/你的仓库名`
 
 ## VPS一键四协议安装脚本
 ```
 bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/sing-box.sh)
-```
-
-## 独立 vmess-argo 优选脚本
-```
-bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/vmess_cf_best.sh)
 ```
 
 ## vps带端口变量运行示列(NAT机)
