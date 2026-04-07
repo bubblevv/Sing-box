@@ -66,6 +66,22 @@ service_process_running() {
     esac
 }
 
+get_total_memory_mb() {
+    awk '/MemTotal:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null
+}
+
+get_singbox_oom_score_adj() {
+    local total_mem_mb
+
+    total_mem_mb=$(get_total_memory_mb)
+
+    if [ -n "${total_mem_mb}" ] && [ "${total_mem_mb}" -le 2048 ]; then
+        echo "-900"
+    else
+        echo "-700"
+    fi
+}
+
 install_cron_job() {
     local cron_line="$1"
     local marker="$2"
@@ -123,6 +139,25 @@ log() {
     printf '[%s] %s\n' "$(timestamp)" "$1" >> "${LOG_FILE}"
 }
 
+service_process_running() {
+    local service_name="$1"
+
+    case "${service_name}" in
+        "sing-box")
+            pgrep -x "sing-box" >/dev/null 2>&1 || pgrep -f "/etc/sing-box/sing-box run -c /etc/sing-box/config.json" >/dev/null 2>&1
+            ;;
+        "argo")
+            pgrep -x "argo" >/dev/null 2>&1 || pgrep -f "/etc/sing-box/argo tunnel" >/dev/null 2>&1
+            ;;
+        "nginx")
+            pgrep -x "nginx" >/dev/null 2>&1
+            ;;
+        *)
+            pgrep -x "${service_name}" >/dev/null 2>&1
+            ;;
+    esac
+}
+
 is_quick_tunnel() {
     grep -q -- '--url http://localhost:8001' /etc/init.d/argo 2>/dev/null || \
     grep -q -- '--url http://localhost:8001' /etc/systemd/system/argo.service 2>/dev/null
@@ -148,7 +183,7 @@ service_active() {
     if has_cmd systemctl; then
         systemctl is-active --quiet "${service_name}"
     elif has_cmd rc-service; then
-        rc-service "${service_name}" status 2>/dev/null | grep -q "started"
+        rc-service "${service_name}" status 2>/dev/null | grep -q "started" || service_process_running "${service_name}"
     else
         return 1
     fi
@@ -208,6 +243,19 @@ refresh_quick_tunnel_subscription() {
     log "refreshed vmess quick tunnel domain to ${argo_domain}"
 }
 
+probe_local_vmess_ws() {
+    local response_headers
+
+    response_headers=$(curl -sS --http1.1 --max-time 8 -o /dev/null -D - \
+        http://127.0.0.1:8001/vmess-argo?ed=2560 \
+        -H "Connection: Upgrade" \
+        -H "Upgrade: websocket" \
+        -H "Sec-WebSocket-Version: 13" \
+        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" 2>/dev/null || true)
+
+    echo "${response_headers}" | grep -q "101 Switching Protocols"
+}
+
 ensure_service_running() {
     local service_name="$1"
 
@@ -252,6 +300,31 @@ ensure_inbound_ports() {
     done
 }
 
+ensure_vmess_ws_healthy() {
+    jq -e '.inbounds[]? | select(.tag=="vmess-ws" and .listen_port==8001)' "${CONFIG_FILE}" >/dev/null 2>&1 || return 0
+
+    if probe_local_vmess_ws; then
+        return 0
+    fi
+
+    log "vmess websocket probe failed, restarting sing-box"
+    restart_service "sing-box" >/dev/null 2>&1
+    sleep 4
+
+    if probe_local_vmess_ws; then
+        [ -x "${ARGO_BIN}" ] && refresh_quick_tunnel_subscription
+        return 0
+    fi
+
+    log "vmess websocket probe still failing after sing-box restart"
+    if [ -x "${ARGO_BIN}" ]; then
+        log "restarting argo after vmess websocket probe failure"
+        restart_service "argo" >/dev/null 2>&1
+        sleep 6
+        refresh_quick_tunnel_subscription
+    fi
+}
+
 acquire_lock
 mkdir -p "${WORK_DIR}"
 touch "${LOG_FILE}" >/dev/null 2>&1 || true
@@ -270,6 +343,7 @@ fi
 
 ensure_service_running "sing-box"
 ensure_inbound_ports
+ensure_vmess_ws_healthy
 
 if [ -x "${ARGO_BIN}" ]; then
     ensure_service_running "argo"
@@ -705,6 +779,9 @@ EOF
 }
 # debian/ubuntu/centos 守护进程
 main_systemd_services() {
+    local singbox_oom_score_adj
+
+    singbox_oom_score_adj=$(get_singbox_oom_score_adj)
     install_systemd_healthcheck
     cat > /etc/systemd/system/sing-box.service << EOF
 [Unit]
@@ -720,6 +797,7 @@ WorkingDirectory=/etc/sing-box
 Environment=HOME=/etc/sing-box
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+OOMScoreAdjust=${singbox_oom_score_adj}
 ExecStartPre=/etc/sing-box/sing-box check -c /etc/sing-box/config.json
 ExecStart=/etc/sing-box/sing-box run -c /etc/sing-box/config.json
 ExecReload=/bin/kill -HUP \$MAINPID
@@ -770,15 +848,19 @@ EOF
 }
 # 适配alpine 守护进程
 alpine_openrc_services() {
+    local singbox_oom_score_adj
+
+    singbox_oom_score_adj=$(get_singbox_oom_score_adj)
     install_openrc_healthcheck
-    cat > /etc/init.d/sing-box << 'EOF'
+    cat > /etc/init.d/sing-box << EOF
 #!/sbin/openrc-run
 
 description="sing-box service"
 command="/etc/sing-box/sing-box"
 command_args="run -c /etc/sing-box/config.json"
-command_background=true
-pidfile="/var/run/sing-box.pid"
+supervisor="supervise-daemon"
+supervise_daemon_args="--respawn-delay 3 --respawn-max 0 --oom-score-adj ${singbox_oom_score_adj}"
+pidfile="/run/\${RC_SVCNAME}.pid"
 
 depend() {
     need net
@@ -795,9 +877,10 @@ EOF
 
 description="Cloudflare Tunnel"
 command="/bin/sh"
-command_args="-c '/etc/sing-box/argo tunnel --url http://localhost:8001 --no-autoupdate --edge-ip-version auto --protocol http2 > /etc/sing-box/argo.log 2>&1'"
-command_background=true
-pidfile="/var/run/argo.pid"
+command_args="-c 'exec /etc/sing-box/argo tunnel --url http://localhost:8001 --no-autoupdate --edge-ip-version auto --protocol http2 >> /etc/sing-box/argo.log 2>&1'"
+supervisor="supervise-daemon"
+supervise_daemon_args="--respawn-delay 5 --respawn-max 0 --oom-score-adj -500"
+pidfile="/run/${RC_SVCNAME}.pid"
 
 depend() {
     need net sing-box

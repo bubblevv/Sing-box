@@ -33,6 +33,8 @@ sing-box是一个强大的代理脚本，多种环境下使用。它支持多种
 * `OpenRC` 下新增 `cron` 巡检保活
 * 服务退出后可自动拉起
 * 监听端口异常时可自动重启
+* `vmess-ws` 新增本地 WebSocket 健康探针，假活状态也会触发自愈
+* Alpine/OpenRC 下改为 `supervise-daemon` 托管，低配 NAT 机掉进程后恢复更快
 * 临时 `Argo` 域名变化后会自动刷新订阅中的 `vmess` 节点
 
 ---
