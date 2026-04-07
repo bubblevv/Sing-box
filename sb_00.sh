@@ -542,7 +542,7 @@ EOF
 cat ${FILE_PATH}/list.txt
 generate_sub_link
 yellow "\nServ00|ct8老王sing-box一键四协议安装脚本(vmess-ws|vmess-ws-tls(argo)|hysteria2|tuic)\n"
-echo -e "${green}issues反馈：${re}${yellow}https://github.com/eooce/Sing-box/issues${re}\n"
+echo -e "${green}issues反馈：${re}${yellow}https://github.com/bubblevv/Sing-box/issues${re}\n"
 echo -e "${green}反馈论坛：${re}${yellow}https://bbs.vps8.me${re}\n"
 echo -e "${green}TG反馈群组：${re}${yellow}https://t.me/vps888${re}\n"
 purple "转载请著名出处，请勿滥用\n"

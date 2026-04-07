@@ -546,7 +546,7 @@ cat ${FILE_PATH}/list.txt
 generate_sub_link
 install_keepalive
 yellow "Serv00|ct8老王sing-box一键四协议无交互安装脚本(vmess-ws|vmess-ws-tls(argo)|hysteria2|tuic)\n"
-echo -e "${green}issues反馈：${re}${yellow}https://github.com/eooce/Sing-box/issues${re}\n"
+echo -e "${green}issues反馈：${re}${yellow}https://github.com/bubblevv/Sing-box/issues${re}\n"
 echo -e "${green}反馈论坛：${re}${yellow}https://bbs.vps8.me${re}\n"
 echo -e "${green}TG反馈群组：${re}${yellow}https://t.me/vps888${re}\n"
 purple "转载请著名出处，请勿滥用\n"
@@ -607,7 +607,7 @@ quick_command() {
   SCRIPT_PATH="$HOME/bin/$COMMAND"
   mkdir -p "$HOME/bin"
   echo "#!/bin/bash" > "$SCRIPT_PATH"
-  echo "bash <(curl -Ls https://raw.githubusercontent.com/eooce/sing-box/main/sb_serv00.sh)" >> "$SCRIPT_PATH"
+  echo "bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/sb_serv00.sh)" >> "$SCRIPT_PATH"
   chmod +x "$SCRIPT_PATH"
   if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
       echo "export PATH=\"\$HOME/bin:\$PATH\"" >> "$HOME/.bashrc" 2>/dev/null

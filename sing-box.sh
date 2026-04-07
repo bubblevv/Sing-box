@@ -3,7 +3,7 @@
 # =========================
 # 老王sing-box四合一安装脚本
 # vless-version-reality|vmess-ws-tls(tunnel)|hysteria2|tuic5
-# 最后更新时间: 2026.3.05
+# 最后更新时间: 2026.4.07
 # =========================
 
 export LANG=en_US.UTF-8
@@ -29,6 +29,15 @@ client_dir="${work_dir}/url.txt"
 export vless_port=${PORT:-$(shuf -i 1000-65000 -n 1)}
 export CFIP=${CFIP:-'cf.877774.xyz'} 
 export CFPORT=${CFPORT:-'443'} 
+script_repo="${SCRIPT_REPO:-bubblevv/Sing-box}"
+script_branch="${SCRIPT_BRANCH:-main}"
+repo_web_url="https://github.com/${script_repo}"
+repo_raw_base="https://raw.githubusercontent.com/${script_repo}/${script_branch}"
+healthcheck_script="${work_dir}/healthcheck.sh"
+healthcheck_log="${work_dir}/healthcheck.log"
+healthcheck_service="/etc/systemd/system/sing-box-healthcheck.service"
+healthcheck_timer="/etc/systemd/system/sing-box-healthcheck.timer"
+healthcheck_cron_marker="sing-box-healthcheck"
 
 # 检查是否为root下运行
 [[ $EUID -ne 0 ]] && red "请在root用户下运行脚本" && exit 1
@@ -36,6 +45,210 @@ export CFPORT=${CFPORT:-'443'}
 # 检查命令是否存在函数
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+install_cron_job() {
+    local cron_line="$1"
+    local marker="$2"
+    local tmp_cron
+
+    command_exists crontab || return 0
+
+    tmp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -F -v "$marker" > "$tmp_cron" || true
+    printf '%s # %s\n' "$cron_line" "$marker" >> "$tmp_cron"
+    crontab "$tmp_cron"
+    rm -f "$tmp_cron"
+}
+
+remove_cron_job() {
+    local marker="$1"
+    local tmp_cron
+
+    command_exists crontab || return 0
+
+    tmp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -F -v "$marker" > "$tmp_cron" || true
+    if [ -s "$tmp_cron" ]; then
+        crontab "$tmp_cron"
+    else
+        crontab -r >/dev/null 2>&1 || true
+    fi
+    rm -f "$tmp_cron"
+}
+
+write_healthcheck_script() {
+    cat > "${healthcheck_script}" << 'EOF'
+#!/usr/bin/env bash
+set -u
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORK_DIR="/etc/sing-box"
+CONFIG_FILE="${WORK_DIR}/config.json"
+SB_BIN="${WORK_DIR}/sing-box"
+ARGO_BIN="${WORK_DIR}/argo"
+LOG_FILE="${WORK_DIR}/healthcheck.log"
+LOCK_FILE="${WORK_DIR}/healthcheck.lock"
+LOCK_DIR="${WORK_DIR}/healthcheck.lock.d"
+
+has_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+timestamp() {
+    date '+%F %T'
+}
+
+log() {
+    printf '[%s] %s\n' "$(timestamp)" "$1" >> "${LOG_FILE}"
+}
+
+acquire_lock() {
+    if has_cmd flock; then
+        exec 9>"${LOCK_FILE}"
+        flock -n 9 || exit 0
+    else
+        mkdir "${LOCK_DIR}" 2>/dev/null || exit 0
+        trap 'rmdir "${LOCK_DIR}" >/dev/null 2>&1 || true' EXIT
+    fi
+}
+
+service_active() {
+    local service_name="$1"
+
+    if has_cmd systemctl; then
+        systemctl is-active --quiet "${service_name}"
+    elif has_cmd rc-service; then
+        rc-service "${service_name}" status 2>/dev/null | grep -q "started"
+    else
+        return 1
+    fi
+}
+
+restart_service() {
+    local service_name="$1"
+
+    if has_cmd systemctl; then
+        systemctl restart "${service_name}"
+    elif has_cmd rc-service; then
+        rc-service "${service_name}" restart
+    else
+        return 1
+    fi
+}
+
+ensure_service_running() {
+    local service_name="$1"
+
+    if service_active "${service_name}"; then
+        return 0
+    fi
+
+    log "${service_name} is inactive, restarting"
+    restart_service "${service_name}" >/dev/null 2>&1
+    sleep 3
+    service_active "${service_name}" || log "${service_name} is still inactive after restart"
+}
+
+port_listening() {
+    local port="$1"
+
+    if has_cmd ss; then
+        ss -Hlnptu 2>/dev/null | awk -v port=":${port}" '$5 ~ port"$" {found=1} END {exit found ? 0 : 1}'
+    elif has_cmd netstat; then
+        netstat -lnptu 2>/dev/null | awk -v port=":${port}" '$4 ~ port"$" || $5 ~ port"$" {found=1} END {exit found ? 0 : 1}'
+    else
+        return 0
+    fi
+}
+
+ensure_inbound_ports() {
+    local ports
+    local port
+
+    ports=$(jq -r '.inbounds[]? | select(.listen_port != null) | .listen_port' "${CONFIG_FILE}" 2>/dev/null | sort -u)
+    [ -z "${ports}" ] && return 0
+
+    for port in ${ports}; do
+        if ! port_listening "${port}"; then
+            log "port ${port} is not listening, restarting sing-box"
+            restart_service "sing-box" >/dev/null 2>&1
+            sleep 3
+            return 0
+        fi
+    done
+}
+
+acquire_lock
+mkdir -p "${WORK_DIR}"
+touch "${LOG_FILE}" >/dev/null 2>&1 || true
+[ -x "${SB_BIN}" ] || chmod +x "${SB_BIN}" >/dev/null 2>&1 || true
+[ -x "${ARGO_BIN}" ] || chmod +x "${ARGO_BIN}" >/dev/null 2>&1 || true
+
+if [ ! -x "${SB_BIN}" ] || [ ! -f "${CONFIG_FILE}" ]; then
+    log "sing-box binary or config is missing, skip healthcheck"
+    exit 1
+fi
+
+if ! "${SB_BIN}" check -c "${CONFIG_FILE}" >/dev/null 2>&1; then
+    log "sing-box config check failed, skip restart to avoid crash loop"
+    exit 1
+fi
+
+ensure_service_running "sing-box"
+ensure_inbound_ports
+
+if [ -x "${ARGO_BIN}" ]; then
+    ensure_service_running "argo"
+fi
+
+if has_cmd nginx && [ -f /etc/nginx/conf.d/sing-box.conf ]; then
+    ensure_service_running "nginx"
+fi
+EOF
+    chmod +x "${healthcheck_script}"
+}
+
+install_systemd_healthcheck() {
+    write_healthcheck_script
+
+    cat > "${healthcheck_service}" << EOF
+[Unit]
+Description=sing-box periodic healthcheck
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${healthcheck_script}
+EOF
+
+    cat > "${healthcheck_timer}" << EOF
+[Unit]
+Description=Run sing-box healthcheck every 45 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=45s
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+install_openrc_healthcheck() {
+    write_healthcheck_script
+    install_cron_job "* * * * * ${healthcheck_script} >/dev/null 2>&1" "${healthcheck_cron_marker}"
+    rc-update add crond default >/dev/null 2>&1 || true
+    rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
+}
+
+remove_healthcheck_assets() {
+    remove_cron_job "${healthcheck_cron_marker}"
+    rm -f "${healthcheck_script}" "${healthcheck_log}" "${work_dir}/healthcheck.lock" > /dev/null 2>&1
+    rm -rf "${work_dir}/healthcheck.lock.d" > /dev/null 2>&1
+    rm -f "${healthcheck_service}" "${healthcheck_timer}" > /dev/null 2>&1
 }
 
 # 检查服务状态通用函数
@@ -413,22 +626,29 @@ EOF
 }
 # debian/ubuntu/centos 守护进程
 main_systemd_services() {
+    install_systemd_healthcheck
     cat > /etc/systemd/system/sing-box.service << EOF
 [Unit]
 Description=sing-box service
 Documentation=https://sing-box.sagernet.org
-After=network.target nss-lookup.target
+Wants=network-online.target
+After=network-online.target nss-lookup.target
 
 [Service]
+Type=simple
 User=root
 WorkingDirectory=/etc/sing-box
+Environment=HOME=/etc/sing-box
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ExecStartPre=/etc/sing-box/sing-box check -c /etc/sing-box/config.json
 ExecStart=/etc/sing-box/sing-box run -c /etc/sing-box/config.json
 ExecReload=/bin/kill -HUP \$MAINPID
-Restart=on-failure
-RestartSec=10
-LimitNOFILE=infinity
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+TimeoutStopSec=15
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
@@ -437,15 +657,17 @@ EOF
     cat > /etc/systemd/system/argo.service << EOF
 [Unit]
 Description=Cloudflare Tunnel
-After=network.target
+Requires=sing-box.service
+After=network-online.target sing-box.service
 
 [Service]
 Type=simple
 NoNewPrivileges=yes
+WorkingDirectory=/etc/sing-box
 TimeoutStartSec=0
-ExecStart=/bin/sh -c "/etc/sing-box/argo tunnel --url http://localhost:8001 --no-autoupdate --edge-ip-version auto --protocol http2 > /etc/sing-box/argo.log 2>&1"
-Restart=on-failure
-RestartSec=5s
+ExecStart=/bin/sh -c "/etc/sing-box/argo tunnel --url http://localhost:8001 --no-autoupdate --edge-ip-version auto --protocol http2 >> /etc/sing-box/argo.log 2>&1"
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -463,9 +685,13 @@ EOF
     systemctl start sing-box
     systemctl enable argo
     systemctl start argo
+    systemctl enable sing-box-healthcheck.timer
+    systemctl start sing-box-healthcheck.timer
+    systemctl start sing-box-healthcheck.service
 }
 # 适配alpine 守护进程
 alpine_openrc_services() {
+    install_openrc_healthcheck
     cat > /etc/init.d/sing-box << 'EOF'
 #!/sbin/openrc-run
 
@@ -474,6 +700,15 @@ command="/etc/sing-box/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background=true
 pidfile="/var/run/sing-box.pid"
+
+depend() {
+    need net
+    use dns logger
+}
+
+start_pre() {
+    ${command} check -c /etc/sing-box/config.json
+}
 EOF
 
     cat > /etc/init.d/argo << 'EOF'
@@ -484,6 +719,11 @@ command="/bin/sh"
 command_args="-c '/etc/sing-box/argo tunnel --url http://localhost:8001 --no-autoupdate --edge-ip-version auto --protocol http2 > /etc/sing-box/argo.log 2>&1'"
 command_background=true
 pidfile="/var/run/argo.pid"
+
+depend() {
+    need net sing-box
+    use dns logger
+}
 EOF
 
     chmod +x /etc/init.d/sing-box
@@ -641,7 +881,7 @@ EOF
             start_nginx  > /dev/null 2>&1
         fi
     else
-        yellow "nginx配置失败,订阅不可应,但不影响节点使用, issues反馈: https://github.com/eooce/Sing-box/issues"
+        yellow "nginx配置失败,订阅不可应,但不影响节点使用, issues反馈: https://github.com/bubblevv/Sing-box/issues"
         restart_nginx  > /dev/null 2>&1
         if [ $? -eq 0 ]; then
             green "nginx订阅配置已生效"
@@ -796,6 +1036,7 @@ uninstall_singbox() {
            if command_exists rc-service; then
                 rc-service sing-box stop
                 rc-service argo stop
+                remove_healthcheck_assets
                 rm /etc/init.d/sing-box /etc/init.d/argo
                 rc-update del sing-box default
                 rc-update del argo default
@@ -803,17 +1044,18 @@ uninstall_singbox() {
                 # 停止 sing-box和 argo 服务
                 systemctl stop "${server_name}"
                 systemctl stop argo
+                systemctl stop sing-box-healthcheck.service sing-box-healthcheck.timer >/dev/null 2>&1 || true
                 # 禁用 sing-box 服务
                 systemctl disable "${server_name}"
                 systemctl disable argo
-
-                # 重新加载 systemd
-                systemctl daemon-reload || true
+                systemctl disable sing-box-healthcheck.timer >/dev/null 2>&1 || true
+                remove_healthcheck_assets
             fi
            # 删除配置文件和日志
            rm -rf "${work_dir}" || true
            rm -rf "${log_dir}" || true
-           rm -rf /etc/systemd/system/sing-box.service /etc/systemd/system/argo.service > /dev/null 2>&1
+           rm -rf /etc/systemd/system/sing-box.service /etc/systemd/system/argo.service /etc/systemd/system/sing-box-healthcheck.service /etc/systemd/system/sing-box-healthcheck.timer > /dev/null 2>&1
+           command_exists systemctl && systemctl daemon-reload >/dev/null 2>&1 || true
            rm  -rf /etc/nginx/conf.d/sing-box.conf > /dev/null 2>&1
            
            # 卸载Nginx
@@ -840,7 +1082,7 @@ create_shortcut() {
   cat > "$work_dir/sb.sh" << EOF
 #!/usr/bin/env bash
 
-bash <(curl -Ls https://raw.githubusercontent.com/eooce/sing-box/main/sing-box.sh) \$1
+bash <(curl -Ls ${repo_raw_base}/sing-box.sh) \$1
 EOF
   chmod +x "$work_dir/sb.sh"
   ln -sf "$work_dir/sb.sh" /usr/bin/sb
@@ -1469,7 +1711,7 @@ menu() {
    echo ""
    green "Telegram群组: ${purple}https://t.me/eooceu${re}"
    green "YouTube频道: ${purple}https://youtube.com/@eooce${re}"
-   green "Github地址: ${purple}https://github.com/eooce/sing-box${re}\n"
+   green "Github地址: ${purple}${repo_web_url}${re}\n"
    purple "=== 老王sing-box四合一安装脚本 ===\n"
    purple "---Argo 状态: ${argo_status}"   
    purple "--Nginx 状态: ${nginx_status}"

@@ -725,7 +725,7 @@ quick_command() {
   mkdir -p "$HOME/bin"
   set +H
   printf '#!/bin/bash\n' > "$SCRIPT_PATH"
-  echo "bash <(curl -Ls https://raw.githubusercontent.com/eooce/sing-box/main/sb_serv00.sh)" >> "$SCRIPT_PATH"
+  echo "bash <(curl -Ls https://raw.githubusercontent.com/bubblevv/Sing-box/main/sb_serv00.sh)" >> "$SCRIPT_PATH"
   chmod +x "$SCRIPT_PATH"
   if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
       echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null
@@ -756,7 +756,7 @@ menu() {
   clear
   echo ""
   purple "=== Serv00|ct8老王sing-box一键四合一安装脚本 ===\n"
-  echo -e "${green}脚本地址：${re}${yellow}https://github.com/eooce/Sing-box${re}\n"
+  echo -e "${green}脚本地址：${re}${yellow}https://github.com/bubblevv/Sing-box${re}\n"
   echo -e "${green}反馈论坛：${re}${yellow}https://bbs.vps8.me${re}\n"
   echo -e "${green}TG反馈群组：${re}${yellow}https://t.me/vps888${re}\n"
   purple "转载请著名出处，请勿滥用\n"
