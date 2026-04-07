@@ -53,6 +53,7 @@ Telegram交流反馈群组：https://t.me/eooceu
 * 可选环境变量PORT CFIP CFPORT REALITY_SERVER TLS_SERVER
 * VPS脚本已内置配置预检、异常自动重启、systemd/OpenRC健康巡检保活
 * vmess-argo 默认直连当前 Argo 域名，只有在你明确需要自定义前置优选域名时才建议传入 `CFIP`
+* 面板里的 vmess-argo 优选域名菜单已支持自动测试可用候选并失败回退到直连 Argo
 * 当前默认仓库已切到 `bubblevv/Sing-box`，后续你再换仓库时，只需把下面命令里的仓库名替换掉，或在运行前加上 `SCRIPT_REPO=你的用户名/你的仓库名`
 
 ## VPS一键四协议安装脚本
